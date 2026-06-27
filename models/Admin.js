@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
+const { Schema, model } = mongoose;
 const { createHmac, randomBytes } = require('crypto');
 const { creatTokenForUser } = require('../services/authentication');
 
-const adminSchema = new mongoose.Schema({
+const AdminSchema = new Schema({
   fullName: {
     type: String,
     required: [true, 'Full name is required'],
@@ -17,15 +18,15 @@ const adminSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: true
+    required: [true, 'Password is required']
   },
   salt: { type: String },
-  profileImage: {
+  profileImageURL: {
     type: String,
-    default: '/imgs/default-admin.png'
+    default: '/imgs/default.png'
   },
 
-  // Admin Role & Permissions
+  // Role & Permissions
   role: {
     type: String,
     enum: ['SUPER_ADMIN', 'ADMIN', 'MODERATOR'],
@@ -36,48 +37,61 @@ const adminSchema = new mongoose.Schema({
     enum: [
       'manage_sellers',
       'manage_orders',
-      'manage_delivery_boys',
       'manage_products',
+      'manage_delivery_boys',
       'manage_payments',
       'manage_disputes',
-      'view_analytics',
       'manage_admins',
-      'manage_refunds'
+      'view_analytics',
+      'manage_settings'
     ]
   }],
 
-  // Contact
-  phoneNumber: { type: String, default: '' },
-
-  // Status
-  status: {
+  // Contact Info
+  phone: {
     type: String,
-    enum: ['active', 'inactive', 'suspended'],
-    default: 'active'
+    default: ''
   },
-  lastLogin: { type: Date },
+  department: {
+    type: String,
+    enum: ['operations', 'finance', 'support', 'moderation', 'tech'],
+    default: 'operations'
+  },
 
-  // Activity Tracking
+  // Access Control
+  isActive: { type: Boolean, default: true },
+  lastLoginAt: { type: Date },
+  loginAttempts: { type: Number, default: 0 },
+  lockedUntil: { type: Date },
+
+  // Activity Log
   activityLog: [{
     action: String,
-    targetType: String, // Order, Seller, DeliveryBoy, etc.
+    description: String,
+    targetType: String, // 'seller', 'order', 'product', etc.
     targetId: mongoose.Schema.Types.ObjectId,
-    details: String,
     timestamp: { type: Date, default: Date.now }
   }],
 
   // Soft delete
   isDeleted: { type: Boolean, default: false },
-  deletedAt: { type: Date }
+  deletedAt: { type: Date },
+  deletedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+
+  // Approval
+  createdBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+  approvedAt: { type: Date },
+  approvedBy: { type: Schema.Types.ObjectId, ref: 'Admin' }
 
 }, { timestamps: true });
 
-adminSchema.index({ email: 1 });
-adminSchema.index({ role: 1 });
-adminSchema.index({ status: 1 });
+AdminSchema.index({ email: 1 });
+AdminSchema.index({ role: 1 });
+AdminSchema.index({ isActive: 1 });
+AdminSchema.index({ createdAt: -1 });
 
 // Password hashing
-adminSchema.pre('save', async function(next) {
+AdminSchema.pre('save', async function (next) {
   if (!this.password || !this.isModified('password')) return next();
   try {
     const salt = randomBytes(16).toString('hex');
@@ -90,27 +104,42 @@ adminSchema.pre('save', async function(next) {
 });
 
 // Match password
-adminSchema.static('matchPassword', async function(email, password) {
-  const admin = await this.findOne({ email: email.toLowerCase() });
+AdminSchema.static('matchPassword', async function (email, password) {
+  const admin = await this.findOne({ email: email.toLowerCase(), isDeleted: false });
   if (!admin) throw new Error('Admin not found');
+  if (!admin.isActive) throw new Error('Admin account is inactive');
+  if (admin.lockedUntil && admin.lockedUntil > new Date()) {
+    throw new Error('Account is locked. Try again later');
+  }
 
   const adminProvidedHash = createHmac('sha256', admin.salt).update(password).digest('hex');
-  if (admin.password !== adminProvidedHash) throw new Error('Incorrect password');
+  if (admin.password !== adminProvidedHash) {
+    admin.loginAttempts = (admin.loginAttempts || 0) + 1;
+    if (admin.loginAttempts >= 5) {
+      admin.lockedUntil = new Date(Date.now() + 30 * 60 * 1000); // Lock for 30 mins
+    }
+    await admin.save();
+    throw new Error('Incorrect Password');
+  }
+
+  admin.loginAttempts = 0;
+  admin.lockedUntil = null;
+  admin.lastLoginAt = new Date();
+  await admin.save();
 
   return creatTokenForUser(admin);
 });
 
 // Log activity
-adminSchema.methods.logActivity = async function(action, targetType, targetId, details) {
+AdminSchema.methods.logActivity = async function(action, description, targetType, targetId) {
   this.activityLog.push({
     action,
+    description,
     targetType,
-    targetId,
-    details,
-    timestamp: new Date()
+    targetId
   });
   await this.save();
 };
 
-const Admin = mongoose.models.Admin || mongoose.model('Admin', adminSchema);
+const Admin = mongoose.models.Admin || model('Admin', AdminSchema);
 module.exports = Admin;

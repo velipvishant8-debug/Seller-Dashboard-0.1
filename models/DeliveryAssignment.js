@@ -4,12 +4,6 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: true,
-    unique: true
-  },
-  seller: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Seller',
     required: true
   },
   deliveryBoy: {
@@ -17,136 +11,134 @@ const deliveryAssignmentSchema = new mongoose.Schema({
     ref: 'DeliveryBoy',
     required: true
   },
-
-  // Pickup Details
-  pickupLocation: {
-    warehouseAddress: { type: String, required: true },
-    coordinates: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] }
-    },
-    pickupTime: { type: Date },
-    pickedUpAt: { type: Date }
+  seller: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Seller',
+    required: true
+  },
+  customer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
 
   // Delivery Details
-  deliveryLocation: {
-    fullName: { type: String, required: true },
-    phone: { type: String, required: true },
-    street: { type: String, required: true },
-    city: { type: String, required: true },
-    state: { type: String, required: true },
-    pincode: { type: String, required: true },
-    coordinates: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] }
-    }
+  pickupAddress: {
+    fullName: String,
+    phone: String,
+    street: String,
+    city: String,
+    state: String,
+    pincode: String
+  },
+  deliveryAddress: {
+    fullName: String,
+    phone: String,
+    street: String,
+    city: String,
+    state: String,
+    pincode: String
   },
 
-  // Tracking
+  // Status tracking
   status: {
     type: String,
-    enum: ['assigned', 'picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'returned', 'cancelled'],
+    enum: ['assigned', 'picked_up', 'in_transit', 'delivered', 'failed', 'returned', 'cancelled'],
     default: 'assigned'
   },
 
-  // Real-time Location Updates
-  locationHistory: [{
-    coordinates: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] }
+  // Location tracking
+  pickupLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
     },
-    address: { type: String },
-    timestamp: { type: Date, default: Date.now },
-    status: String
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
+    }
+  },
+  currentLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number],
+      default: [0, 0]
+    }
+  },
+  deliveryLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number],
+      default: [0, 0]
+    }
+  },
+  locationUpdates: [{
+    latitude: Number,
+    longitude: Number,
+    timestamp: { type: Date, default: Date.now }
   }],
 
-  // Delivery Proof
-  deliveryProof: {
-    signature: { type: String },
-    photo: { type: String },
-    otp: { type: String },
-    deliveredAt: { type: Date },
-    receivedBy: { type: String }
-  },
-
-  // Issues/Failed Delivery
-  issue: {
-    reason: {
-      type: String,
-      enum: ['address_incorrect', 'customer_unavailable', 'customer_refused', 'item_damaged', 'weather_delay', 'other']
-    },
-    description: { type: String },
-    photo: { type: String },
-    reportedAt: { type: Date }
-  },
-
-  // Metrics
-  distance: { type: Number, default: 0 }, // in km
+  // Timeline
+  assignedAt: { type: Date, default: Date.now },
+  pickedUpAt: { type: Date },
+  deliveredAt: { type: Date },
+  failedAt: { type: Date },
+  returnedAt: { type: Date },
   estimatedDeliveryTime: { type: Date },
-  actualDeliveryTime: { type: Date },
-  deliveryCharges: { type: Number, default: 50 },
+
+  // Proof of delivery
+  deliveryProof: {
+    signature: { type: String, default: '' },
+    photo: { type: String, default: '' },
+    recipientName: { type: String, default: '' },
+    recipientPhone: { type: String, default: '' },
+    notes: { type: String, default: '' }
+  },
+
+  // Failure reason
+  failureReason: { type: String, default: '' },
+  failureProof: { type: String, default: '' },
 
   // Ratings
   deliveryBoyRating: { type: Number, min: 1, max: 5 },
-  deliveryBoyReview: { type: String },
   customerRating: { type: Number, min: 1, max: 5 },
-  customerReview: { type: String },
+  deliveryBoyReview: { type: String, default: '' },
+  customerReview: { type: String, default: '' },
 
-  // Notes
-  notes: { type: String },
-  adminNotes: { type: String },
+  // Charges
+  deliveryCharge: { type: Number, default: 0 },
+  returnCharge: { type: Number, default: 0 },
+  totalCharge: { type: Number, default: 0 },
 
-  // Cancellation
-  cancelledAt: { type: Date },
-  cancelledBy: { type: String, enum: ['admin', 'seller', 'customer', 'delivery_boy'] },
-  cancellationReason: { type: String }
+  // Payment
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed'],
+    default: 'pending'
+  },
+  paidAt: { type: Date },
+
+  // Attempt tracking
+  attemptCount: { type: Number, default: 0 },
+  maxAttempts: { type: Number, default: 3 },
+
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: { type: Date }
 
 }, { timestamps: true });
 
-// Geospatial indexes
-deliveryAssignmentSchema.index({ 'deliveryLocation.coordinates': '2dsphere' });
-deliveryAssignmentSchema.index({ 'pickupLocation.coordinates': '2dsphere' });
+// Geospatial index
+deliveryAssignmentSchema.index({ 'currentLocation': '2dsphere' });
 deliveryAssignmentSchema.index({ deliveryBoy: 1, status: 1 });
 deliveryAssignmentSchema.index({ order: 1 });
-deliveryAssignmentSchema.index({ seller: 1, createdAt: -1 });
 deliveryAssignmentSchema.index({ status: 1, createdAt: -1 });
-
-// Methods
-deliveryAssignmentSchema.methods.updateLocation = async function(latitude, longitude, address, newStatus) {
-  this.locationHistory.push({
-    coordinates: {
-      type: 'Point',
-      coordinates: [longitude, latitude]
-    },
-    address: address || '',
-    timestamp: new Date(),
-    status: newStatus || this.status
-  });
-
-  if (newStatus) {
-    this.status = newStatus;
-  }
-
-  await this.save();
-};
-
-deliveryAssignmentSchema.methods.markDelivered = async function(proofData) {
-  this.status = 'delivered';
-  this.deliveryProof = {
-    ...proofData,
-    deliveredAt: new Date()
-  };
-  await this.save();
-};
-
-deliveryAssignmentSchema.methods.reportIssue = async function(issueData) {
-  this.status = 'failed';
-  this.issue = {
-    ...issueData,
-    reportedAt: new Date()
-  };
-  await this.save();
-};
 
 module.exports = mongoose.model('DeliveryAssignment', deliveryAssignmentSchema);

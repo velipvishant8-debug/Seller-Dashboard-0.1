@@ -1,6 +1,9 @@
 const mongoose = require('mongoose');
+const { Schema, model } = mongoose;
+const { createHmac, randomBytes } = require('crypto');
+const { creatTokenForUser } = require('../services/authentication');
 
-const deliveryBoySchema = new mongoose.Schema({
+const DeliveryBoySchema = new Schema({
   fullName: {
     type: String,
     required: [true, 'Full name is required'],
@@ -13,130 +16,120 @@ const deliveryBoySchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
-  phone: {
-    type: String,
-    required: [true, 'Phone number is required'],
-    unique: true
-  },
   password: {
     type: String,
     required: false
   },
   salt: { type: String },
-
-  // Profile
-  profileImage: {
+  phone: {
     type: String,
-    default: '/imgs/default-delivery.png'
+    required: [true, 'Phone number is required'],
+    unique: true
   },
-  dateOfBirth: { type: Date },
-  gender: {
+  profileImageURL: {
     type: String,
-    enum: ['Male', 'Female', 'Other'],
-    default: 'Male'
+    default: '/imgs/default.png'
   },
 
-  // Address
-  address: {
-    street: { type: String, default: '' },
-    city: { type: String, default: '' },
-    state: { type: String, default: '' },
-    pincode: { type: String, default: '' },
-    country: { type: String, default: 'India' }
+  // Location & Service
+  city: { type: String, required: true },
+  state: { type: String, required: true },
+  currentLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
+    }
   },
+  serviceAreas: [String], // Pincode areas
+  isAvailable: { type: Boolean, default: true },
+  lastActiveAt: { type: Date },
 
-  // Documents
-  aadharNumber: { type: String, unique: true, sparse: true },
-  licenseNumber: { type: String, unique: true, sparse: true },
-  bankAccountNumber: { type: String, default: '' },
-  ifscCode: { type: String, default: '' },
-  bankAccountHolder: { type: String, default: '' },
-
-  // Vehicle Details
-  vehicleType: {
+  // Documents & Verification
+  documentUrls: {
+    aadhar: { type: String, default: '' },
+    license: { type: String, default: '' },
+    bankProof: { type: String, default: '' }
+  },
+  verificationStatus: {
     type: String,
-    enum: ['bicycle', 'motorcycle', 'scooter', 'car', 'van'],
-    default: 'motorcycle'
+    enum: ['Pending', 'Verified', 'Rejected', 'Suspended'],
+    default: 'Pending'
   },
-  vehicleRegistration: { type: String, default: '' },
+  verifiedAt: { type: Date },
+  verifiedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+
+  // Stats
+  totalDeliveries: { type: Number, default: 0 },
+  successfulDeliveries: { type: Number, default: 0 },
+  failedDeliveries: { type: Number, default: 0 },
+  rating: { type: Number, default: 5, min: 0, max: 5 },
+  totalEarnings: { type: Number, default: 0 },
+
+  // Bank Details
+  bankDetails: {
+    accountName: { type: String, default: '' },
+    accountNumber: { type: String, default: '' },
+    ifscCode: { type: String, default: '' },
+    bankName: { type: String, default: '' },
+    upiId: { type: String, default: '' }
+  },
+
+  // Device Info
+  deviceId: { type: String, default: '' },
+  pushToken: { type: String, default: '' },
 
   // Status
   status: {
     type: String,
-    enum: ['pending', 'verified', 'active', 'inactive', 'suspended'],
-    default: 'pending'
+    enum: ['active', 'inactive', 'suspended', 'blocked'],
+    default: 'active'
   },
-  verifiedAt: { type: Date },
-  verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
-
-  // Current Location (Real-time tracking)
-  currentLocation: {
-    coordinates: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] } // [longitude, latitude]
-    },
-    address: { type: String, default: '' },
-    updatedAt: { type: Date, default: Date.now }
-  },
-
-  // Performance Stats
-  totalDeliveries: { type: Number, default: 0 },
-  successfulDeliveries: { type: Number, default: 0 },
-  failedDeliveries: { type: Number, default: 0 },
-  averageRating: { type: Number, default: 0, min: 0, max: 5 },
-  totalRatings: { type: Number, default: 0 },
-
-  // Earnings
-  totalEarnings: { type: Number, default: 0 },
-  pendingEarnings: { type: Number, default: 0 },
-  deliveryChargePerOrder: { type: Number, default: 50 },
-
-  // Availability
-  isAvailable: { type: Boolean, default: false },
-  currentAssignments: { type: Number, default: 0 },
-  maxAssignmentsPerDay: { type: Number, default: 20 },
 
   // Soft delete
   isDeleted: { type: Boolean, default: false },
-  deletedAt: { type: Date }
+  deletedAt: { type: Date },
+  approvedAt: { type: Date },
+  approvedBy: { type: Schema.Types.ObjectId, ref: 'Admin' }
 
 }, { timestamps: true });
 
-// Geospatial index for location tracking
-deliveryBoySchema.index({ 'currentLocation.coordinates': '2dsphere' });
-deliveryBoySchema.index({ email: 1 });
-deliveryBoySchema.index({ phone: 1 });
-deliveryBoySchema.index({ status: 1 });
-deliveryBoySchema.index({ isAvailable: 1 });
+// Geospatial index
+DeliveryBoySchema.index({ 'currentLocation': '2dsphere' });
+DeliveryBoySchema.index({ email: 1 });
+DeliveryBoySchema.index({ phone: 1 });
+DeliveryBoySchema.index({ verificationStatus: 1 });
+DeliveryBoySchema.index({ isAvailable: 1 });
+DeliveryBoySchema.index({ createdAt: -1 });
 
-// Methods
-deliveryBoySchema.methods.updateLocation = async function(latitude, longitude, address) {
-  this.currentLocation.coordinates.coordinates = [longitude, latitude];
-  this.currentLocation.address = address || '';
-  this.currentLocation.updatedAt = new Date();
-  await this.save();
-};
-
-deliveryBoySchema.methods.recordDelivery = async function(isSuccess, rating = null) {
-  this.totalDeliveries += 1;
-  if (isSuccess) {
-    this.successfulDeliveries += 1;
-  } else {
-    this.failedDeliveries += 1;
+// Password hashing
+DeliveryBoySchema.pre('save', async function (next) {
+  if (!this.password || !this.isModified('password')) return next();
+  try {
+    const salt = randomBytes(16).toString('hex');
+    this.salt = salt;
+    this.password = createHmac('sha256', salt).update(this.password).digest('hex');
+    next();
+  } catch (error) {
+    next(error);
   }
-  
-  if (rating) {
-    this.totalRatings += 1;
-    this.averageRating = ((this.averageRating * (this.totalRatings - 1)) + rating) / this.totalRatings;
-  }
-  
-  await this.save();
-};
+});
 
-deliveryBoySchema.methods.addEarnings = async function(amount, orderId) {
-  this.totalEarnings += amount;
-  this.pendingEarnings += amount;
-  await this.save();
-};
+// Match password and generate token
+DeliveryBoySchema.static('matchPassword', async function (email, password) {
+  const deliveryBoy = await this.findOne({ email: email.toLowerCase() });
+  if (!deliveryBoy) throw new Error('Delivery boy not found');
+  if (!deliveryBoy.password) throw new Error('Invalid account');
 
-module.exports = mongoose.model('DeliveryBoy', deliveryBoySchema);
+  const providedHash = createHmac('sha256', deliveryBoy.salt).update(password).digest('hex');
+  if (deliveryBoy.password !== providedHash) throw new Error('Incorrect Password');
+
+  return creatTokenForUser(deliveryBoy);
+});
+
+const DeliveryBoy = mongoose.models.DeliveryBoy || model('DeliveryBoy', DeliveryBoySchema);
+module.exports = DeliveryBoy;
