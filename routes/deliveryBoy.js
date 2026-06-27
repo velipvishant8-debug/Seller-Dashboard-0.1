@@ -1,44 +1,51 @@
-const express = require('express');
-const router = express.Router();
-const { isDeliveryAuth } = require('../middlewares/deliveryAuth');
+const { Router } = require('express');
 const DeliveryBoy = require('../models/DeliveryBoy');
-const DeliveryAssignment = require('../models/DeliveryAssignment');
-const DeliveryService = require('../services/deliveryService');
-const { creatTokenForUser } = require('../services/authentication');
-const { createHmac, randomBytes } = require('crypto');
+const { loginLimiter } = require('../middlewares/rateLimiting');
+const { validateEmail, validatePassword, sanitizeInput } = require('../middlewares/validation');
+const router = Router();
 
-// Delivery boy login
-router.post('/login', async (req, res) => {
+const isDeliveryBoyAuth = (req, res, next) => {
+  const { verifyToken } = require('../services/authentication');
+  const token = req.cookies['token'];
+
+  if (!token) {
+    req.flash('error', 'Please login as delivery boy');
+    return res.redirect('/delivery/signin');
+  }
+
+  try {
+    const decoded = verifyToken(token);
+    if (!decoded || !decoded._id) {
+      throw new Error('Invalid token');
+    }
+    req.deliveryBoy = decoded;
+    next();
+  } catch (error) {
+    res.clearCookie('token', { path: '/' });
+    req.flash('error', 'Session expired. Please login again');
+    res.redirect('/delivery/signin');
+  }
+};
+
+// Signin page
+router.get('/signin', (req, res) => {
+  if (req.cookies['token']) {
+    return res.redirect('/delivery/dashboard');
+  }
+  res.render('delivery/signin', { title: 'Delivery Boy Login' });
+});
+
+// Signin
+router.post('/signin', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email and password required'
-      });
+    if (!validateEmail(email)) {
+      req.flash('error', 'Invalid email');
+      return res.redirect('/delivery/signin');
     }
 
-    const deliveryBoy = await DeliveryBoy.findOne({ email: email.toLowerCase() });
-    if (!deliveryBoy) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    const hashedPassword = createHmac('sha256', deliveryBoy.salt)
-      .update(password)
-      .digest('hex');
-
-    if (hashedPassword !== deliveryBoy.password) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    const token = creatTokenForUser(deliveryBoy);
+    const token = await DeliveryBoy.matchPassword(email, password);
 
     res.cookie('token', token, {
       httpOnly: true,
@@ -47,210 +54,94 @@ router.post('/login', async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
-    res.json({
-      success: true,
-      message: 'Login successful',
-      token,
-      deliveryBoy: {
-        _id: deliveryBoy._id,
-        fullName: deliveryBoy.fullName,
-        email: deliveryBoy.email,
-        phone: deliveryBoy.phone
-      }
-    });
+    req.flash('success', 'Login successful');
+    res.redirect('/delivery/dashboard');
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    req.flash('error', error.message);
+    res.redirect('/delivery/signin');
   }
 });
 
-// Get delivery boy profile
-router.get('/profile', isDeliveryAuth, async (req, res) => {
-  try {
-    const deliveryBoy = await DeliveryBoy.findById(req.deliveryBoy._id).select('-password -salt');
+// Signup page
+router.get('/signup', (req, res) => {
+  res.render('delivery/signup', { title: 'Delivery Boy Registration' });
+});
 
-    res.json({
-      success: true,
+// Signup
+router.post('/signup', async (req, res) => {
+  try {
+    const { fullName, email, phone, password, confirmPassword, city, state } = req.body;
+
+    if (!validateEmail(email)) {
+      req.flash('error', 'Invalid email');
+      return res.redirect('/delivery/signup');
+    }
+
+    if (!validatePassword(password)) {
+      req.flash('error', 'Password must be at least 6 characters');
+      return res.redirect('/delivery/signup');
+    }
+
+    if (password !== confirmPassword) {
+      req.flash('error', 'Passwords do not match');
+      return res.redirect('/delivery/signup');
+    }
+
+    const existing = await DeliveryBoy.findOne({ $or: [{ email }, { phone }] });
+    if (existing) {
+      req.flash('error', 'Email or phone already registered');
+      return res.redirect('/delivery/signup');
+    }
+
+    const deliveryBoy = await DeliveryBoy.create({
+      fullName: sanitizeInput(fullName),
+      email: email.toLowerCase(),
+      phone: sanitizeInput(phone),
+      password,
+      city: sanitizeInput(city),
+      state: sanitizeInput(state),
+      verificationStatus: 'Pending'
+    });
+
+    const token = await DeliveryBoy.matchPassword(email, password);
+
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    req.flash('success', 'Registered successfully. Please complete verification.');
+    res.redirect('/delivery/pending-verification');
+  } catch (error) {
+    console.error('Signup error:', error);
+    req.flash('error', error.message);
+    res.redirect('/delivery/signup');
+  }
+});
+
+// Dashboard
+router.get('/dashboard', isDeliveryBoyAuth, async (req, res) => {
+  try {
+    const deliveryBoy = await DeliveryBoy.findById(req.deliveryBoy._id);
+
+    res.render('delivery/dashboard', {
+      title: 'Dashboard',
       deliveryBoy
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('Dashboard error:', error);
+    req.flash('error', error.message);
+    res.redirect('/delivery/signin');
   }
 });
 
-// Update location
-router.post('/location/update', isDeliveryAuth, async (req, res) => {
-  try {
-    const { latitude, longitude, address } = req.body;
-
-    if (!latitude || !longitude) {
-      return res.status(400).json({
-        success: false,
-        message: 'Latitude and longitude required'
-      });
-    }
-
-    const deliveryBoy = await DeliveryBoy.findById(req.deliveryBoy._id);
-    await deliveryBoy.updateLocation(latitude, longitude, address);
-
-    res.json({
-      success: true,
-      message: 'Location updated',
-      location: deliveryBoy.currentLocation
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Get assigned deliveries
-router.get('/assignments', isDeliveryAuth, async (req, res) => {
-  try {
-    const status = req.query.status || 'assigned';
-
-    const assignments = await DeliveryAssignment.find({
-      deliveryBoy: req.deliveryBoy._id,
-      status
-    })
-      .populate('order', 'orderNumber totalAmount')
-      .sort({ createdAt: -1 })
-      .lean();
-
-    res.json({
-      success: true,
-      assignments,
-      count: assignments.length
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Get assignment details
-router.get('/assignments/:assignmentId', isDeliveryAuth, async (req, res) => {
-  try {
-    const assignment = await DeliveryAssignment.findById(req.params.assignmentId)
-      .populate('order')
-      .populate('deliveryBoy');
-
-    if (!assignment) {
-      return res.status(404).json({ success: false, message: 'Assignment not found' });
-    }
-
-    if (assignment.deliveryBoy._id.toString() !== req.deliveryBoy._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    res.json({
-      success: true,
-      assignment
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Update assignment status
-router.patch('/assignments/:assignmentId/status', isDeliveryAuth, async (req, res) => {
-  try {
-    const { status, latitude, longitude, address } = req.body;
-
-    const assignment = await DeliveryAssignment.findById(req.params.assignmentId);
-    if (!assignment) {
-      return res.status(404).json({ success: false, message: 'Assignment not found' });
-    }
-
-    if (assignment.deliveryBoy.toString() !== req.deliveryBoy._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    await DeliveryService.updateDeliveryLocation(
-      req.params.assignmentId,
-      latitude,
-      longitude,
-      address,
-      status
-    );
-
-    res.json({
-      success: true,
-      message: 'Status updated'
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Mark delivery complete
-router.post('/assignments/:assignmentId/complete', isDeliveryAuth, async (req, res) => {
-  try {
-    const { receivedBy, otp, photo } = req.body;
-
-    const assignment = await DeliveryAssignment.findById(req.params.assignmentId);
-    if (!assignment) {
-      return res.status(404).json({ success: false, message: 'Assignment not found' });
-    }
-
-    if (assignment.deliveryBoy.toString() !== req.deliveryBoy._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const updatedAssignment = await DeliveryService.completeDelivery(
-      req.params.assignmentId,
-      { receivedBy, otp, photo }
-    );
-
-    res.json({
-      success: true,
-      message: 'Delivery completed',
-      assignment: updatedAssignment
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Report delivery issue
-router.post('/assignments/:assignmentId/issue', isDeliveryAuth, async (req, res) => {
-  try {
-    const { reason, description, photo } = req.body;
-
-    const assignment = await DeliveryAssignment.findById(req.params.assignmentId);
-    if (!assignment) {
-      return res.status(404).json({ success: false, message: 'Assignment not found' });
-    }
-
-    if (assignment.deliveryBoy.toString() !== req.deliveryBoy._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const updatedAssignment = await DeliveryService.reportDeliveryIssue(
-      req.params.assignmentId,
-      { reason, description, photo }
-    );
-
-    res.json({
-      success: true,
-      message: 'Issue reported',
-      assignment: updatedAssignment
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Get delivery analytics
-router.get('/analytics/summary', isDeliveryAuth, async (req, res) => {
-  try {
-    const period = req.query.period || 'month';
-    const analytics = await DeliveryService.getDeliveryAnalytics(req.deliveryBoy._id, period);
-
-    res.json({
-      success: true,
-      analytics
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+// Logout
+router.get('/logout', (req, res) => {
+  res.clearCookie('token', { path: '/' });
+  req.flash('success', 'Logged out successfully');
+  res.redirect('/delivery/signin');
 });
 
 module.exports = router;
